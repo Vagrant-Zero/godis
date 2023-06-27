@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"math"
+	"math/rand"
 )
 
 const (
@@ -64,6 +65,7 @@ func (dict *Dict) rehash(step int) {
 			dict.hts[0] = dict.hts[1]
 			dict.hts[1] = nil
 			dict.rehashidx = -1
+			return
 		}
 		// find a no-null slot
 		for dict.hts[0].table[dict.rehashidx] == nil {
@@ -190,4 +192,123 @@ func (dict *Dict) Add(key, val *Gobj) error {
 	entry.Val = val
 	val.IncrRefCount()
 	return nil
+}
+
+func (dict *Dict) Set(key, val *Gobj) {
+	if err := dict.Add(key, val); err == nil {
+		return
+	}
+	// the key exists, find the entry
+	entry := dict.Find(key)
+	entry.Val.DecrRefCount()
+	entry.Val = val
+	val.IncrRefCount()
+}
+
+func freeEntry(e *Entry) {
+	e.Key.DecrRefCount()
+	e.Val.DecrRefCount()
+}
+
+func (dict *Dict) Delete(key *Gobj) error {
+	if dict.hts[0] == nil {
+		return NK_ERR
+	}
+	if dict.isRehashing() {
+		dict.rehashStep()
+	}
+	// find key & delete * decr refcount
+	h := dict.HashFunc(key)
+	for i := 0; i <= 1; i++ {
+		idx := h & dict.hts[i].mask
+		e := dict.hts[i].table[idx]
+		var prev *Entry
+		for e != nil {
+			if dict.EqualFunc(e.Key, key) {
+				if prev == nil {
+					dict.hts[i].table[idx] = e.next
+				} else {
+					prev.next = e.next
+				}
+				freeEntry(e)
+				return nil
+			}
+			prev = e
+			e = e.next
+		}
+		if !dict.isRehashing() {
+			break
+		}
+	}
+	return NK_ERR
+}
+
+func (dict *Dict) Find(key *Gobj) *Entry {
+	if dict.hts[0] == nil {
+		return nil
+	}
+	if dict.isRehashing() {
+		dict.rehashStep()
+	}
+	// find key in both ht
+	h := dict.HashFunc(key)
+	for i := 0; i <= 1; i++ {
+		idx := h & dict.hts[i].mask
+		e := dict.hts[i].table[idx]
+		for e != nil {
+			if dict.EqualFunc(e.Key, key) {
+				return e
+			}
+			e = e.next
+		}
+		if !dict.isRehashing() {
+			break
+		}
+	}
+	return nil
+}
+
+func (dict *Dict) Get(key *Gobj) *Gobj {
+	entry := dict.Find(key)
+	if entry == nil {
+		return nil
+	}
+	return entry.Val
+}
+
+func (dict *Dict) RandomGet() *Entry {
+	if dict.hts[0] == nil {
+		return nil
+	}
+	t := 0
+	if dict.isRehashing() {
+		dict.rehashStep()
+		// simplify the logic, random get in th bigger table
+		if dict.hts[1] != nil && dict.hts[1].used > dict.hts[0].used {
+			t = 1
+		}
+	}
+	// random slot
+	idx := rand.Int63n(dict.hts[t].size)
+	cnt := 0
+	for dict.hts[t].table[idx] == nil && cnt < 1000 {
+		idx = rand.Int63n(dict.hts[t].size)
+		cnt++
+	}
+	if dict.hts[t].table[idx] == nil {
+		return nil
+	}
+	// random entry
+	var listLen int64
+	p := dict.hts[t].table[idx]
+	for p != nil {
+		listLen++
+		p = p.next
+	}
+	listIdx := rand.Int63n(listLen)
+	p = dict.hts[t].table[idx]
+	for i := int64(0); i < listIdx; i++ {
+		p = p.next
+	}
+	return p
 }
