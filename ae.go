@@ -60,7 +60,7 @@ func getFeKey(fd int, mask FeType) int {
 	}
 }
 
-// 由bit来实现关注的事件
+// focus on events (eg. write or read ...) by bit
 func (loop *AeLoop) getEpollMask(fd int) uint32 {
 	var ev uint32
 	if loop.FileEvents[getFeKey(fd, AE_READABLE)] != nil {
@@ -184,7 +184,7 @@ func (loop *AeLoop) nearestTime() int64 {
 func (loop *AeLoop) AeWait() (tes []*AeTimeEvent, fes []*AeFileEvent, err error) {
 	timeout := loop.nearestTime() - GetMsTime()
 	if timeout <= 0 {
-		timeout = 100 // at least wait 10ms
+		timeout = 10 // at least wait 10ms
 	}
 	var events [128]unix.EpollEvent
 	n, err := unix.EpollWait(loop.fileEventFd, events[:], int(timeout))
@@ -243,7 +243,7 @@ func (loop *AeLoop) AeProcess(tes []*AeTimeEvent, fes []*AeFileEvent) {
 func (loop *AeLoop) AeMain() {
 	for !loop.stop {
 		tes, fes, err := loop.AeWait()
-		if err != nil {
+		if err != nil && err.Error() != "interrupted system call" {
 			loop.stop = true
 		}
 		loop.AeProcess(tes, fes)

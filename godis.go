@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -16,7 +15,7 @@ type CmdType byte
 const (
 	COMMAND_UNKNOWN CmdType = 0x00
 	COMMAND_INLINE  CmdType = 0x01
-	COMMAND_BUCK    CmdType = 0x02
+	COMMAND_BULK    CmdType = 0x02
 )
 
 const (
@@ -26,7 +25,8 @@ const (
 )
 
 type GodisDB struct {
-	// todo
+	data   *Dict
+	expire *Dict
 }
 
 type GodisServer struct {
@@ -40,7 +40,7 @@ type GodisServer struct {
 type GodisClient struct {
 	fd       int
 	db       *GodisDB
-	args     []*Gobj // todo: 待实现
+	args     []*Gobj
 	reply    *List
 	sentLen  int
 	queryBuf []byte
@@ -68,11 +68,23 @@ var cmdTable []GodisCommand = []GodisCommand{
 }
 
 func expireIfNeeded(key *Gobj) {
-	// todo
+	entry := server.db.expire.Find(key)
+	if entry == nil {
+		return
+	}
+	when := entry.Val.IntVal()
+	if when > GetMsTime() {
+		return
+	}
+	// key expired
+	server.db.expire.Delete(key)
+	server.db.data.Delete(key)
 }
 
 func findKeyRead(key *Gobj) *Gobj {
-	// todo
+	// check out if the key expired
+	expireIfNeeded(key)
+	return server.db.data.Get(key)
 }
 
 func getCommand(c *GodisClient) {
@@ -110,7 +122,7 @@ func expireCommand(c *GodisClient) {
 	expObj := CreateFromInt(expire)
 	server.db.expire.Set(key, expObj)
 	expObj.DecrRefCount()
-	c.AddReplyStr("OK\r\n")
+	c.AddReplyStr("+OK\r\n")
 }
 
 func lookupCommand(cmdStr string) *GodisCommand {
@@ -120,6 +132,12 @@ func lookupCommand(cmdStr string) *GodisCommand {
 		}
 	}
 	return nil
+}
+
+func (c *GodisClient) AddReply(o *Gobj) {
+	c.reply.Append(o)
+	o.IncrRefCount()
+	server.aeLoop.AddFileEvent(c.fd, AE_WRITABLE, SendReplyToClient, c)
 }
 
 func (c *GodisClient) AddReplyStr(str string) {
@@ -137,11 +155,11 @@ func ProcessCommand(c *GodisClient) {
 	}
 	cmd := lookupCommand(cmdStr)
 	if cmd == nil {
-		c.AddReplyStr("-ERR: unknown command")
+		c.AddReplyStr("-ERR: unknown command\r\n")
 		resetClient(c)
 		return
 	} else if cmd.arity != len(c.args) {
-		c.AddReplyStr("-ERR: wrong number of args")
+		c.AddReplyStr("-ERR: wrong number of args\r\n")
 		resetClient(c)
 		return
 	}
@@ -169,7 +187,7 @@ func freeClient(client *GodisClient) {
 	server.aeLoop.RemoveFileEvent(client.fd, AE_READABLE)
 	server.aeLoop.RemoveFileEvent(client.fd, AE_WRITABLE)
 	freeReplyList(client)
-	Close(client.fd) // net.go实现
+	Close(client.fd)
 }
 
 func resetClient(client *GodisClient) {
@@ -203,6 +221,7 @@ func handleInlineBuf(client *GodisClient) (bool, error) {
 	}
 	subs := strings.Split(string(client.queryBuf[:idx]), " ")
 	client.queryBuf = client.queryBuf[idx+2:]
+	client.queryLen -= idx + 2
 	client.args = make([]*Gobj, len(subs))
 	for i, v := range subs {
 		client.args[i] = CreateObject(GSTR, v)
@@ -230,7 +249,7 @@ func handleBulkBuf(client *GodisClient) (bool, error) {
 	// read every bulk string
 	for client.bulkNum > 0 {
 		// read bulk length
-		if client.bulkNum == 0 {
+		if client.bulkLen == 0 {
 			idx, err := client.findLineInQuery()
 			if idx < 0 {
 				return false, nil
@@ -258,7 +277,6 @@ func handleBulkBuf(client *GodisClient) (bool, error) {
 		if client.queryBuf[idx] != '\r' || client.queryBuf[idx+1] != '\n' {
 			return false, errors.New("expect CRLF for bulk end")
 		}
-		// todo: 待理解
 		client.args[len(client.args)-client.bulkNum] = CreateObject(GSTR, string(client.queryBuf[:idx]))
 		client.queryBuf = client.queryBuf[idx+2:]
 		client.queryLen -= idx + 2
@@ -273,7 +291,7 @@ func ProcessQueryBuf(client *GodisClient) error {
 	for client.queryLen > 0 {
 		if client.cmdTy == COMMAND_UNKNOWN {
 			if client.queryBuf[0] == '*' {
-				client.cmdTy = COMMAND_BUCK
+				client.cmdTy = COMMAND_BULK
 			} else {
 				client.cmdTy = COMMAND_INLINE
 			}
@@ -283,7 +301,7 @@ func ProcessQueryBuf(client *GodisClient) error {
 		var err error
 		if client.cmdTy == COMMAND_INLINE {
 			ok, err = handleInlineBuf(client)
-		} else if client.cmdTy == COMMAND_BUCK {
+		} else if client.cmdTy == COMMAND_BULK {
 			ok, err = handleBulkBuf(client)
 		} else {
 			return errors.New("unknown Godis Command Type")
@@ -320,6 +338,7 @@ func ReadQueryFromClient(loop *AeLoop, fd int, extra interface{}) {
 	}
 	client.queryLen += n
 	log.Printf("read %v bytes from client: %v\n", n, client.fd)
+	log.Printf("ReadQueryFrom Client, queryBuf: %v\n", string(client.queryBuf))
 	err = ProcessQueryBuf(client)
 	if err != nil {
 		log.Printf("process query buf err: %v\n", err)
@@ -380,7 +399,7 @@ func CreateClient(fd int) *GodisClient {
 	client.fd = fd
 	client.db = server.db
 	client.queryBuf = make([]byte, GODIS_IO_BUF)
-	client.reply = ListCreate(ListType{EqualFunc: GStrEqual()})
+	client.reply = ListCreate(ListType{EqualFunc: GStrEqual})
 	return &client
 }
 
@@ -429,7 +448,9 @@ func initServer(config *Config) error {
 }
 
 func main() {
-	path := os.Args[1]
+	// cmd start
+	//path := os.Args[1]
+	path := "./config.json"
 	config, err := LoadConfig(path)
 	if err != nil {
 		log.Printf("config error: %v\n", err)

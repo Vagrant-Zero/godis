@@ -35,6 +35,14 @@ func (o *Gobj) StrVal() string {
 	return o.Val_.(string)
 }
 
+func CreateFromInt(val int64) *Gobj {
+	return &Gobj{
+		Type_:    GSTR,
+		Val_:     strconv.FormatInt(val, 10),
+		refCount: 1,
+	}
+}
+
 func CreateObject(typ Gtype, ptr interface{}) *Gobj {
 	return &Gobj{
 		Type_:    typ,
