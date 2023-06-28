@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"hash/fnv"
 	"log"
 	"strconv"
@@ -60,12 +59,6 @@ type GodisCommand struct {
 }
 
 var server GodisServer
-var cmdTable []GodisCommand = []GodisCommand{
-	GodisCommand{name: "get", proc: getCommand, arity: 2},
-	GodisCommand{name: "set", proc: setCommand, arity: 3},
-	GodisCommand{name: "expire", proc: expireCommand, arity: 3},
-	// todo: other commands
-}
 
 func expireIfNeeded(key *Gobj) {
 	entry := server.db.expire.Find(key)
@@ -85,44 +78,6 @@ func findKeyRead(key *Gobj) *Gobj {
 	// check out if the key expired
 	expireIfNeeded(key)
 	return server.db.data.Get(key)
-}
-
-func getCommand(c *GodisClient) {
-	key := c.args[1]
-	val := findKeyRead(key)
-	if val == nil {
-		c.AddReplyStr("$-1\r\n")
-	} else if val.Type_ != GSTR {
-		c.AddReplyStr("-ERR: wrong type\r\n")
-	} else {
-		str := val.StrVal()
-		c.AddReplyStr(fmt.Sprintf("$%d%v\r\n", len(str), str))
-	}
-}
-
-func setCommand(c *GodisClient) {
-	key := c.args[1]
-	val := c.args[2]
-	if val.Type_ != GSTR {
-		c.AddReplyStr("-ERR: wrong type\r\n")
-	}
-	server.db.data.Set(key, val)
-	server.db.expire.Delete(key)
-	c.AddReplyStr("+OK\r\n")
-}
-
-func expireCommand(c *GodisClient) {
-	key := c.args[1]
-	val := c.args[2]
-	// todo : extract same code, use methods like aop
-	if val.Type_ != GSTR {
-		c.AddReplyStr("-ERR: wrong type\r\n")
-	}
-	expire := GetMsTime() + (val.IntVal() * 1000)
-	expObj := CreateFromInt(expire)
-	server.db.expire.Set(key, expObj)
-	expObj.DecrRefCount()
-	c.AddReplyStr("+OK\r\n")
 }
 
 func lookupCommand(cmdStr string) *GodisCommand {
@@ -454,15 +409,16 @@ func main() {
 	config, err := LoadConfig(path)
 	if err != nil {
 		log.Printf("config error: %v\n", err)
-		// todo: if error, should be panic
+		panic("load config error.")
 	}
 	err = initServer(config)
 	if err != nil {
 		log.Printf("init server error: %v\n", err)
-		// todo: if error, should be panic
+		panic("init server error.")
 	}
 	server.aeLoop.AddFileEvent(server.fd, AE_READABLE, AcceptHandler, nil)
 	server.aeLoop.AddTimeEvent(AE_NORMAL, 100, ServerCron, nil)
 	log.Println("godis server is up.")
+	PrintBanner()
 	server.aeLoop.AeMain()
 }

@@ -74,6 +74,15 @@ func (list *List) LPush(val *Gobj) {
 	list.length += 1
 }
 
+func (list *List) LPop() *Gobj {
+	n := list.head
+	list.DelNode(n)
+	if n == nil {
+		return nil
+	}
+	return n.Val
+}
+
 func (list *List) DelNode(n *Node) {
 	if n == nil {
 		return

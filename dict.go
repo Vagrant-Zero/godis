@@ -17,6 +17,7 @@ var (
 	EP_ERR = errors.New("expand error")
 	EX_ERR = errors.New("key exists error")
 	NK_ERR = errors.New("key doesn't exist error")
+	WO_ERR = errors.New("wrong type Operation against a key holding the wrong kind of value")
 )
 
 type Entry struct {
